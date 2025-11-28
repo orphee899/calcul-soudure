@@ -17,7 +17,7 @@ class AppColors {
   static const Color surfaceLight = Color(0xFF334155); // Industrial 700
   static const Color textMain = Color(0xFFF1F5F9);
   static const Color textMuted = Color(0xFF94A3B8);
-  static const Color accent = Color(0xFFF59E0B);     // Amber
+  static const Color accent = Color(0xFFF59E0B);      // Amber
   static const Color accentHover = Color(0xFFD97706);
   static const Color error = Color(0xFFEF4444);
 }
@@ -91,41 +91,47 @@ class WeldingState extends ChangeNotifier {
   double _current = 0.0;
   double _length = 0.0;
   
-  // Stopwatch logic
-  Timer? _timer;
-  double _time = 0.0; // Seconds
-  bool _isRunning = false;
-  int _lastStartTime = 0;
-
-  // History
-  final List<WeldingPass> _passes = [];
-  
-  // AI
-  String? _aiAnalysis;
-  bool _isAnalyzing = false;
+  // --- LOGIQUE CHRONOMÈTRE ROBUSTE (CORRIGÉE) ---
+  final Stopwatch _stopwatch = Stopwatch();
+  Timer? _uiTimer;
+  double _accumulatedTime = 0.0; // La mémoire du temps
 
   // Getters
   WeldingProcess get process => _process;
   double get voltage => _voltage;
   double get current => _current;
   double get length => _length;
-  double get time => _time;
-  bool get isRunning => _isRunning;
+  
+  // Le temps total est : ce qu'on a en mémoire + ce qui tourne actuellement
+  double get time {
+    if (_stopwatch.isRunning) {
+      return _accumulatedTime + (_stopwatch.elapsedMilliseconds / 1000.0);
+    } else {
+      return _accumulatedTime;
+    }
+  }
+  
+  bool get isRunning => _stopwatch.isRunning;
+  
+  // History & AI
+  final List<WeldingPass> _passes = [];
+  String? _aiAnalysis;
+  bool _isAnalyzing = false;
   List<WeldingPass> get passes => _passes;
   String? get aiAnalysis => _aiAnalysis;
   bool get isAnalyzing => _isAnalyzing;
 
   // Derived Values
   double? get heatInput {
-    if (_time > 0 && _length > 0) {
+    if (time > 0 && _length > 0) {
       // Heat Input Q = k * (U * I * t) / L * 10^-3
-      return (_process.efficiency * _voltage * _current * _time) / (_length * 1000);
+      return (_process.efficiency * _voltage * _current * time) / (_length * 1000);
     }
     return null;
   }
 
   double? get power => _voltage * _current; // Watts
-  double? get travelSpeed => (_time > 0) ? _length / _time : null; // mm/s
+  double? get travelSpeed => (time > 0) ? _length / time : null; // mm/s
 
   // Setters
   void setProcess(WeldingProcess p) { _process = p; notifyListeners(); }
@@ -135,7 +141,7 @@ class WeldingState extends ChangeNotifier {
   
   // Stopwatch Methods
   void toggleTimer() {
-    if (_isRunning) {
+    if (_stopwatch.isRunning) {
       _stopTimer();
     } else {
       _startTimer();
@@ -143,35 +149,32 @@ class WeldingState extends ChangeNotifier {
   }
 
   void _startTimer() {
-    _isRunning = true;
-    _lastStartTime = DateTime.now().millisecondsSinceEpoch;
-    // On conserve le temps accumulé et on ajoute le delta
-    final initialAccumulated = _time;
-    
-    _timer = Timer.periodic(const Duration(milliseconds: 30), (timer) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final delta = (now - _lastStartTime) / 1000.0;
-      _time = initialAccumulated + delta; 
-      notifyListeners();
-    });
+    _stopwatch.start();
+    // Rafraîchir l'interface toutes les 30ms pour voir les chiffres bouger
+    _uiTimer = Timer.periodic(const Duration(milliseconds: 30), (_) => notifyListeners());
     notifyListeners();
   }
 
   void _stopTimer() {
-    _timer?.cancel();
-    _isRunning = false;
+    _stopwatch.stop();
+    _uiTimer?.cancel();
+    // IMPORTANT : On sauvegarde le temps qui vient de s'écouler dans la mémoire
+    _accumulatedTime += _stopwatch.elapsedMilliseconds / 1000.0;
+    _stopwatch.reset(); // On remet le chrono interne à 0 pour le prochain tour
     notifyListeners();
   }
 
   void resetTimer() {
-    _stopTimer();
-    _time = 0.0;
+    _stopwatch.stop();
+    _stopwatch.reset();
+    _uiTimer?.cancel();
+    _accumulatedTime = 0.0; // On efface la mémoire
     notifyListeners();
   }
 
   void manualUpdateTime(double newTime) {
-    if (!_isRunning) {
-      _time = newTime;
+    if (!_stopwatch.isRunning) {
+      _accumulatedTime = newTime;
       notifyListeners();
     }
   }
@@ -187,7 +190,7 @@ class WeldingState extends ChangeNotifier {
       current: _current,
       voltage: _voltage,
       length: _length,
-      time: _time,
+      time: time,
       heatInput: heatInput!,
       kFactor: _process.efficiency,
     );
@@ -222,7 +225,7 @@ class WeldingState extends ChangeNotifier {
         Tension: $_voltage V
         Courant: $_current A
         Longueur: $_length mm
-        Temps: ${_time.toStringAsFixed(1)} s
+        Temps: ${time.toStringAsFixed(1)} s
         
         RÉSULTATS:
         Énergie: ${heatInput!.toStringAsFixed(3)} kJ/mm
@@ -345,15 +348,21 @@ class HomeScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: const [
-              ResultCard(),
+              // --- ORDRE MODIFIÉ ICI ---
+              
+              StopwatchCard(), // 1. Chrono en premier
               SizedBox(height: 24),
-              StopwatchCard(),
+              
+              InputsCard(), // 2. Les champs à remplir
               SizedBox(height: 24),
-              InputsCard(),
+              
+              ResultCard(), // 3. LE RÉSULTAT EST MAINTENANT ICI (EN BAS)
               SizedBox(height: 24),
-              ActionsSection(),
+              
+              ActionsSection(), // 4. Boutons Sauvegarder / IA
               SizedBox(height: 24),
-              HistorySection(),
+              
+              HistorySection(), // 5. Historique
               SizedBox(height: 40),
             ],
           ),
@@ -487,9 +496,7 @@ class _StopwatchCardState extends State<StopwatchCard> {
     return Consumer<WeldingState>(
       builder: (context, state, child) {
         // Sync controller with state when stopped and not editing
-        // This ensures if state resets, the text field updates
         if (!state.isRunning && _manualTimeController.text != state.time.toStringAsFixed(1)) {
-             // Only update if not focused to avoid overwriting user typing
              if (!FocusScope.of(context).hasFocus) {
                  _manualTimeController.text = state.time.toStringAsFixed(1);
              }
@@ -738,7 +745,6 @@ class ActionsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // La clé API est récupérée des variables d'environnement au moment du build
-    // Utiliser: flutter run --dart-define=API_KEY=votre_cle
     const apiKey = String.fromEnvironment('API_KEY');
 
     return Consumer<WeldingState>(
@@ -792,7 +798,7 @@ class ActionsSection extends StatelessWidget {
             ),
             if (state.aiAnalysis != null)
               Container(
-                margin: const EdgeInsets.only(top: 16),
+                margin: const EdgeInsets.only(top: 16), // CORRIGÉ
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppColors.surface.withOpacity(0.9),
