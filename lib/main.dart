@@ -12,12 +12,12 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 // ==========================================
 
 class AppColors {
-  static const Color background = Color(0xFF0F172A); // Industrial 900
-  static const Color surface = Color(0xFF1E293B);    // Industrial 800
-  static const Color surfaceLight = Color(0xFF334155); // Industrial 700
+  static const Color background = Color(0xFF0F172A); 
+  static const Color surface = Color(0xFF1E293B);    
+  static const Color surfaceLight = Color(0xFF334155); 
   static const Color textMain = Color(0xFFF1F5F9);
   static const Color textMuted = Color(0xFF94A3B8);
-  static const Color accent = Color(0xFFF59E0B);      // Amber
+  static const Color accent = Color(0xFFF59E0B);      
   static const Color accentHover = Color(0xFFD97706);
   static const Color error = Color(0xFFEF4444);
 }
@@ -91,27 +91,19 @@ class WeldingState extends ChangeNotifier {
   double _current = 0.0;
   double _length = 0.0;
   
-  // --- LOGIQUE CHRONOMÈTRE ROBUSTE (CORRIGÉE) ---
-  final Stopwatch _stopwatch = Stopwatch();
-  Timer? _uiTimer;
-  double _accumulatedTime = 0.0; // La mémoire du temps
+  // --- NOUVELLE LOGIQUE SIMPLE ---
+  // On abandonne le Stopwatch complexe. On fait un compteur simple.
+  Timer? _timer;
+  double _time = 0.0; 
+  bool _isRunning = false;
 
   // Getters
   WeldingProcess get process => _process;
   double get voltage => _voltage;
   double get current => _current;
   double get length => _length;
-  
-  // Le temps total est : ce qu'on a en mémoire + ce qui tourne actuellement
-  double get time {
-    if (_stopwatch.isRunning) {
-      return _accumulatedTime + (_stopwatch.elapsedMilliseconds / 1000.0);
-    } else {
-      return _accumulatedTime;
-    }
-  }
-  
-  bool get isRunning => _stopwatch.isRunning;
+  double get time => _time;
+  bool get isRunning => _isRunning;
   
   // History & AI
   final List<WeldingPass> _passes = [];
@@ -123,15 +115,14 @@ class WeldingState extends ChangeNotifier {
 
   // Derived Values
   double? get heatInput {
-    if (time > 0 && _length > 0) {
-      // Heat Input Q = k * (U * I * t) / L * 10^-3
-      return (_process.efficiency * _voltage * _current * time) / (_length * 1000);
+    if (_time > 0 && _length > 0) {
+      return (_process.efficiency * _voltage * _current * _time) / (_length * 1000);
     }
     return null;
   }
 
-  double? get power => _voltage * _current; // Watts
-  double? get travelSpeed => (time > 0) ? _length / time : null; // mm/s
+  double? get power => _voltage * _current; 
+  double? get travelSpeed => (_time > 0) ? _length / _time : null; 
 
   // Setters
   void setProcess(WeldingProcess p) { _process = p; notifyListeners(); }
@@ -139,9 +130,9 @@ class WeldingState extends ChangeNotifier {
   void setCurrent(double c) { _current = c; notifyListeners(); }
   void setLength(double l) { _length = l; notifyListeners(); }
   
-  // Stopwatch Methods
+  // --- LOGIQUE CHRONO SIMPLIFIÉE ---
   void toggleTimer() {
-    if (_stopwatch.isRunning) {
+    if (_isRunning) {
       _stopTimer();
     } else {
       _startTimer();
@@ -149,35 +140,35 @@ class WeldingState extends ChangeNotifier {
   }
 
   void _startTimer() {
-    _stopwatch.start();
-    // Rafraîchir l'interface toutes les 30ms pour voir les chiffres bouger
-    _uiTimer = Timer.periodic(const Duration(milliseconds: 30), (_) => notifyListeners());
+    _isRunning = true;
+    // Ajoute 0.1 seconde toutes les 100ms. Impossible de se tromper.
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      _time += 0.1; 
+      notifyListeners();
+    });
     notifyListeners();
   }
 
   void _stopTimer() {
-    _stopwatch.stop();
-    _uiTimer?.cancel();
-    // IMPORTANT : On sauvegarde le temps qui vient de s'écouler dans la mémoire
-    _accumulatedTime += _stopwatch.elapsedMilliseconds / 1000.0;
-    _stopwatch.reset(); // On remet le chrono interne à 0 pour le prochain tour
+    _timer?.cancel();
+    _isRunning = false;
+    // On NE touche PAS à la variable _time ici. Elle reste telle quelle.
     notifyListeners();
   }
 
   void resetTimer() {
-    _stopwatch.stop();
-    _stopwatch.reset();
-    _uiTimer?.cancel();
-    _accumulatedTime = 0.0; // On efface la mémoire
+    _stopTimer(); // Arrête d'abord
+    _time = 0.0;  // Puis remet à 0
     notifyListeners();
   }
 
   void manualUpdateTime(double newTime) {
-    if (!_stopwatch.isRunning) {
-      _accumulatedTime = newTime;
+    if (!_isRunning) {
+      _time = newTime;
       notifyListeners();
     }
   }
+  // ---------------------------------
 
   // History Methods
   void savePass() {
@@ -190,7 +181,7 @@ class WeldingState extends ChangeNotifier {
       current: _current,
       voltage: _voltage,
       length: _length,
-      time: time,
+      time: _time,
       heatInput: heatInput!,
       kFactor: _process.efficiency,
     );
@@ -225,7 +216,7 @@ class WeldingState extends ChangeNotifier {
         Tension: $_voltage V
         Courant: $_current A
         Longueur: $_length mm
-        Temps: ${time.toStringAsFixed(1)} s
+        Temps: ${_time.toStringAsFixed(1)} s
         
         RÉSULTATS:
         Énergie: ${heatInput!.toStringAsFixed(3)} kJ/mm
@@ -268,7 +259,7 @@ class WeldMasterApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => WeldingState()),
       ],
       child: MaterialApp(
-        title: 'WeldMaster AI',
+        title: 'WeldMaster V4',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           scaffoldBackgroundColor: AppColors.background,
@@ -330,7 +321,7 @@ class HomeScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'WeldMaster AI',
+                  'WeldMaster V4', // CHANGEMENT DU NOM POUR VÉRIFIER
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                 ),
                 Text(
@@ -344,25 +335,19 @@ class HomeScreen extends StatelessWidget {
       ),
       body: Center(
         child: Container(
-          constraints: const BoxConstraints(maxWidth: 600), // Web responsive
+          constraints: const BoxConstraints(maxWidth: 600),
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: const [
-              // --- ORDRE MODIFIÉ ICI ---
-              
-              StopwatchCard(), // 1. Chrono en premier
+              StopwatchCard(),
               SizedBox(height: 24),
-              
-              InputsCard(), // 2. Les champs à remplir
+              InputsCard(),
               SizedBox(height: 24),
-              
-              ResultCard(), // 3. LE RÉSULTAT EST MAINTENANT ICI (EN BAS)
+              ResultCard(),
               SizedBox(height: 24),
-              
-              ActionsSection(), // 4. Boutons Sauvegarder / IA
+              ActionsSection(),
               SizedBox(height: 24),
-              
-              HistorySection(), // 5. Historique
+              HistorySection(),
               SizedBox(height: 40),
             ],
           ),
@@ -798,7 +783,7 @@ class ActionsSection extends StatelessWidget {
             ),
             if (state.aiAnalysis != null)
               Container(
-                margin: const EdgeInsets.only(top: 16), // CORRIGÉ
+                margin: const EdgeInsets.only(top: 16),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppColors.surface.withOpacity(0.9),
