@@ -1,4 +1,6 @@
 import 'dart:async';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
@@ -6,6 +8,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+// ICI C'EST LA CORRECTION : On cache "Border" de Excel pour éviter le conflit
+import 'package:excel/excel.dart' hide Border; 
 
 // ==========================================
 // 1. CONFIGURATION
@@ -18,6 +22,7 @@ class AppColors {
   static const Color textMain = Color(0xFFF1F5F9);
   static const Color textMuted = Color(0xFF94A3B8);
   static const Color accent = Color(0xFFF59E0B);      
+  static const Color success = Color(0xFF22C55E); 
   static const Color error = Color(0xFFEF4444);
 }
 
@@ -51,6 +56,7 @@ extension WeldingProcessExtension on WeldingProcess {
 
 class WeldingPass {
   final String id;
+  final DateTime date;
   final WeldingProcess process;
   final double current;
   final double voltage;
@@ -61,6 +67,7 @@ class WeldingPass {
 
   WeldingPass({
     required this.id,
+    required this.date,
     required this.process,
     required this.current,
     required this.voltage,
@@ -82,11 +89,10 @@ class WeldingState extends ChangeNotifier {
   double _current = 0.0;
   double _length = 0.0;
   
-  // --- NOUVELLE LOGIQUE CHRONO (V5 - DateTime) ---
-  // Cette méthode utilise l'horloge système. Infaillible.
+  // Chrono
   Timer? _uiTimer;
-  double _savedTime = 0.0; // Le temps stocké quand c'est arrêté
-  DateTime? _startTime;    // L'heure exacte du démarrage
+  double _savedTime = 0.0; 
+  DateTime? _startTime;    
 
   // Getters
   WeldingProcess get process => _process;
@@ -95,13 +101,11 @@ class WeldingState extends ChangeNotifier {
   double get length => _length;
   bool get isRunning => _startTime != null;
   
-  // Calcul dynamique du temps
   double get time {
     if (_startTime == null) {
       return _savedTime;
     } else {
       final now = DateTime.now();
-      // Le temps actuel = temps sauvegardé + différence entre maintenant et le départ
       final diff = now.difference(_startTime!).inMilliseconds / 1000.0;
       return _savedTime + diff;
     }
@@ -113,24 +117,19 @@ class WeldingState extends ChangeNotifier {
   void setCurrent(double c) { _current = c; notifyListeners(); }
   void setLength(double l) { _length = l; notifyListeners(); }
   
-  // --- ACTIONS CHRONO ---
+  // Actions Chrono
   void toggleTimer() {
-    if (isRunning) {
-      _stopTimer();
-    } else {
-      _startTimer();
-    }
+    if (isRunning) _stopTimer();
+    else _startTimer();
   }
 
   void _startTimer() {
     _startTime = DateTime.now();
-    // On lance un timer juste pour rafraîchir l'écran (visuel)
     _uiTimer = Timer.periodic(const Duration(milliseconds: 50), (_) => notifyListeners());
     notifyListeners();
   }
 
   void _stopTimer() {
-    // On fige le temps calculé
     _savedTime = time;
     _startTime = null;
     _uiTimer?.cancel();
@@ -151,7 +150,7 @@ class WeldingState extends ChangeNotifier {
     }
   }
 
-  // --- RESULTATS & HISTORIQUE ---
+  // Historique & IA
   final List<WeldingPass> _passes = [];
   String? _aiAnalysis;
   bool _isAnalyzing = false;
@@ -165,12 +164,12 @@ class WeldingState extends ChangeNotifier {
     }
     return null;
   }
-  double? get power => _voltage * _current; 
-
+  
   void savePass() {
     if (heatInput == null) return;
     final pass = WeldingPass(
       id: const Uuid().v4(),
+      date: DateTime.now(),
       process: _process,
       current: _current,
       voltage: _voltage,
@@ -188,19 +187,62 @@ class WeldingState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // EXPORT EXCEL
+  Future<void> exportToExcel() async {
+    if (_passes.isEmpty) return;
+
+    var excel = Excel.createExcel();
+    Sheet sheetObject = excel['Soudures'];
+    excel.setDefaultSheet('Soudures');
+
+    List<String> headers = [
+      'Date', 'Heure', 'Procédé', 'Tension (V)', 'Intensité (A)', 
+      'Longueur (mm)', 'Temps (s)', 'Facteur k', 'Énergie (kJ/mm)'
+    ];
+    
+    for (int i = 0; i < headers.length; i++) {
+      var cell = sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 0));
+      cell.value = TextCellValue(headers[i]);
+      cell.cellStyle = CellStyle(bold: true, horizontalAlign: HorizontalAlign.Center);
+    }
+
+    for (int i = 0; i < _passes.length; i++) {
+      final p = _passes[i];
+      final row = i + 1;
+      
+      final dateStr = DateFormat('dd/MM/yyyy').format(p.date);
+      final hourStr = DateFormat('HH:mm').format(p.date);
+
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: row)).value = TextCellValue(dateStr);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: row)).value = TextCellValue(hourStr);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 2, rowIndex: row)).value = TextCellValue(p.process.label);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: row)).value = DoubleCellValue(p.voltage);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: row)).value = DoubleCellValue(p.current);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 5, rowIndex: row)).value = DoubleCellValue(p.length);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 6, rowIndex: row)).value = DoubleCellValue(double.parse(p.time.toStringAsFixed(1)));
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: row)).value = DoubleCellValue(p.kFactor);
+      sheetObject.cell(CellIndex.indexByColumnRow(columnIndex: 8, rowIndex: row)).value = DoubleCellValue(double.parse(p.heatInput.toStringAsFixed(3)));
+    }
+
+    final fileBytes = excel.save();
+    if (fileBytes != null) {
+      final blob = html.Blob([fileBytes]);
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final anchor = html.AnchorElement(href: url)
+        ..setAttribute("download", "Rapport_Soudure_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.xlsx")
+        ..click();
+      html.Url.revokeObjectUrl(url);
+    }
+  }
+
   Future<void> analyzeWeld(String apiKey) async {
     if (heatInput == null) return;
     _isAnalyzing = true;
     _aiAnalysis = null;
     notifyListeners();
-
     try {
       final model = GenerativeModel(model: 'gemini-2.5-flash', apiKey: apiKey);
-      final prompt = '''
-        Analyse soudure: ${_process.label}, $_voltage V, $_current A, $_length mm, ${time.toStringAsFixed(1)} s.
-        Energie: ${heatInput!.toStringAsFixed(3)} kJ/mm.
-        Donne un avis expert court (S355, stabilité, sécurité).
-      ''';
+      final prompt = 'Analyse soudure: ${_process.label}, $_voltage V, $_current A, $_length mm, ${time.toStringAsFixed(1)} s. Energie: ${heatInput!.toStringAsFixed(3)} kJ/mm. Avis expert court.';
       final response = await model.generateContent([Content.text(prompt)]);
       _aiAnalysis = response.text;
     } catch (e) {
@@ -228,7 +270,7 @@ class WeldMasterApp extends StatelessWidget {
     return MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => WeldingState())],
       child: MaterialApp(
-        title: 'WeldMaster V5',
+        title: 'WeldMaster V7',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           scaffoldBackgroundColor: AppColors.background,
@@ -255,7 +297,7 @@ class HomeScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: AppColors.background,
-        title: const Text('WeldMaster V5 (Correctif)', style: TextStyle(fontWeight: FontWeight.bold)), // Titre pour vérifier la version
+        title: const Text('WeldMaster V7 (Excel)', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: Center(
         child: Container(
@@ -283,112 +325,38 @@ class HomeScreen extends StatelessWidget {
 
 class StopwatchCard extends StatelessWidget {
   const StopwatchCard({super.key});
-
   @override
   Widget build(BuildContext context) {
     return Consumer<WeldingState>(
       builder: (context, state, child) {
         return Container(
           padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: AppColors.surfaceLight),
-          ),
-          child: Column(
-            children: [
-              const Text('CHRONOMÈTRE', style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              
-              // --- CHANGEMENT MAJEUR ICI : PLUS DE TEXTFIELD ---
-              // On affiche juste du texte pour éviter les bugs iPhone
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    state.time.toStringAsFixed(1),
-                    style: const TextStyle(fontSize: 70, fontWeight: FontWeight.bold, color: AppColors.accent, fontFamily: 'monospace'),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 12.0, left: 4),
-                    child: Text("s", style: TextStyle(fontSize: 24, color: AppColors.textMuted)),
-                  ),
-                ],
-              ),
-              
-              // Bouton pour modifier manuellement si besoin
-              if (!state.isRunning)
-                TextButton.icon(
-                  onPressed: () => _showEditDialog(context, state),
-                  icon: const Icon(Icons.edit, size: 16, color: AppColors.textMuted),
-                  label: const Text("Corriger le temps", style: TextStyle(color: AppColors.textMuted)),
-                ),
-
-              const SizedBox(height: 20),
-              
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    onPressed: (state.isRunning && state.time > 0) ? null : state.resetTimer,
-                    icon: const Icon(Icons.refresh),
-                    style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight, padding: const EdgeInsets.all(16)),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: state.toggleTimer,
-                      icon: Icon(state.isRunning ? Icons.pause : Icons.play_arrow),
-                      label: Text(state.isRunning ? "ARRÊTER" : (state.time > 0 ? "REPRENDRE" : "SOUDER")),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: state.isRunning ? Colors.redAccent : AppColors.accent,
-                        foregroundColor: state.isRunning ? Colors.white : AppColors.background,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                ],
-              )
-            ],
-          ),
+          decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(24), border: Border.all(color: AppColors.surfaceLight)),
+          child: Column(children: [
+            const Text('CHRONOMÈTRE', style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(state.time.toStringAsFixed(1), style: const TextStyle(fontSize: 70, fontWeight: FontWeight.bold, color: AppColors.accent, fontFamily: 'monospace')),
+              const Padding(padding: EdgeInsets.only(bottom: 12.0, left: 4), child: Text("s", style: TextStyle(fontSize: 24, color: AppColors.textMuted))),
+            ]),
+            if (!state.isRunning)
+              TextButton.icon(onPressed: () => _showEditDialog(context, state), icon: const Icon(Icons.edit, size: 16, color: AppColors.textMuted), label: const Text("Corriger", style: TextStyle(color: AppColors.textMuted))),
+            const SizedBox(height: 20),
+            Row(children: [
+              IconButton(onPressed: (state.isRunning && state.time > 0) ? null : state.resetTimer, icon: const Icon(Icons.refresh), style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight, padding: const EdgeInsets.all(16))),
+              const SizedBox(width: 16),
+              Expanded(child: ElevatedButton.icon(onPressed: state.toggleTimer, icon: Icon(state.isRunning ? Icons.pause : Icons.play_arrow), label: Text(state.isRunning ? "ARRÊTER" : "SOUDER"), style: ElevatedButton.styleFrom(backgroundColor: state.isRunning ? Colors.redAccent : AppColors.accent, foregroundColor: state.isRunning ? Colors.white : AppColors.background, padding: const EdgeInsets.symmetric(vertical: 16)))),
+            ])
+          ]),
         );
       },
     );
   }
-
   void _showEditDialog(BuildContext context, WeldingState state) {
     final controller = TextEditingController(text: state.time.toStringAsFixed(1));
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text("Temps manuel", style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(suffixText: "secondes"),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annuler")),
-          ElevatedButton(
-            onPressed: () {
-              final val = double.tryParse(controller.text.replaceAll(',', '.'));
-              if (val != null) state.manualSetTime(val);
-              Navigator.pop(ctx);
-            },
-            child: const Text("Valider"),
-          )
-        ],
-      ),
-    );
+    showDialog(context: context, builder: (ctx) => AlertDialog(backgroundColor: AppColors.surface, title: const Text("Temps manuel", style: TextStyle(color: Colors.white)), content: TextField(controller: controller, keyboardType: const TextInputType.numberWithOptions(decimal: true), style: const TextStyle(color: Colors.white), autofocus: true), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annuler")), ElevatedButton(onPressed: () { final val = double.tryParse(controller.text.replaceAll(',', '.')); if (val != null) state.manualSetTime(val); Navigator.pop(ctx); }, child: const Text("Valider"))]));
   }
 }
-
-// ... Les autres widgets (InputsCard, ResultCard, etc.) restent simples ...
 
 class InputsCard extends StatelessWidget {
   const InputsCard({super.key});
@@ -400,16 +368,7 @@ class InputsCard extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('PARAMÈTRES', style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
-        Consumer<WeldingState>(
-          builder: (context, state, _) => DropdownButtonFormField<WeldingProcess>(
-            value: state.process,
-            dropdownColor: AppColors.surface,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(labelText: "Procédé", border: OutlineInputBorder()),
-            items: WeldingProcess.values.map((p) => DropdownMenuItem(value: p, child: Text(p.label))).toList(),
-            onChanged: (v) => state.setProcess(v!),
-          ),
-        ),
+        Consumer<WeldingState>(builder: (context, state, _) => DropdownButtonFormField<WeldingProcess>(value: state.process, dropdownColor: AppColors.surface, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Procédé", border: OutlineInputBorder()), items: WeldingProcess.values.map((p) => DropdownMenuItem(value: p, child: Text(p.label))).toList(), onChanged: (v) => state.setProcess(v!))),
         const SizedBox(height: 16),
         Row(children: [
           Expanded(child: _SimpleInput(label: "Intensité (A)", icon: Icons.flash_on, onChanged: (v) => Provider.of<WeldingState>(context, listen: false).setCurrent(v))),
@@ -430,16 +389,7 @@ class _SimpleInput extends StatelessWidget {
   const _SimpleInput({required this.label, required this.icon, required this.onChanged});
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      style: const TextStyle(color: Colors.white, fontSize: 18),
-      onChanged: (v) => onChanged(double.tryParse(v.replaceAll(',', '.')) ?? 0),
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: AppColors.textMuted),
-        contentPadding: const EdgeInsets.all(16),
-      ),
-    );
+    return TextField(keyboardType: const TextInputType.numberWithOptions(decimal: true), style: const TextStyle(color: Colors.white, fontSize: 18), onChanged: (v) => onChanged(double.tryParse(v.replaceAll(',', '.')) ?? 0), decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: AppColors.textMuted), contentPadding: const EdgeInsets.all(16)));
   }
 }
 
@@ -449,11 +399,7 @@ class ResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<WeldingState>(builder: (context, state, _) => Container(
       padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [AppColors.surface, Color(0xFF0F172A)]),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.surfaceLight),
-      ),
+      decoration: BoxDecoration(gradient: const LinearGradient(colors: [AppColors.surface, Color(0xFF0F172A)]), borderRadius: BorderRadius.circular(24), border: Border.all(color: AppColors.surfaceLight)),
       child: Column(children: [
         const Text('ÉNERGIE DE SOUDAGE', style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.bold)),
         Text(state.heatInput?.toStringAsFixed(3) ?? "---", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
@@ -473,12 +419,7 @@ class ActionsSection extends StatelessWidget {
       return Row(children: [
         Expanded(child: ElevatedButton.icon(onPressed: state.savePass, icon: const Icon(Icons.save), label: const Text("SAUVER"), style: ElevatedButton.styleFrom(backgroundColor: AppColors.surfaceLight, foregroundColor: Colors.white, padding: const EdgeInsets.all(16)))),
         const SizedBox(width: 12),
-        Expanded(child: ElevatedButton.icon(
-          onPressed: state.isAnalyzing ? null : () => state.analyzeWeld(apiKey),
-          icon: const Icon(Icons.auto_awesome),
-          label: Text(state.isAnalyzing ? "..." : "IA"),
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.all(16)),
-        )),
+        Expanded(child: ElevatedButton.icon(onPressed: state.isAnalyzing ? null : () => state.analyzeWeld(apiKey), icon: const Icon(Icons.auto_awesome), label: Text(state.isAnalyzing ? "..." : "IA"), style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.all(16)))),
       ]);
     });
   }
@@ -494,12 +435,23 @@ class HistorySection extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(24)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('HISTORIQUE (${state.passes.length})', style: const TextStyle(color: AppColors.textMuted)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('HISTORIQUE (${state.passes.length})', style: const TextStyle(color: AppColors.textMuted)),
+              TextButton.icon(
+                onPressed: state.exportToExcel,
+                icon: const Icon(Icons.download, size: 18, color: AppColors.success),
+                label: const Text("Excel", style: TextStyle(color: AppColors.success, fontWeight: FontWeight.bold)),
+                style: TextButton.styleFrom(backgroundColor: AppColors.success.withOpacity(0.1)),
+              )
+            ],
+          ),
           const SizedBox(height: 10),
           ...state.passes.map((p) => ListTile(
             contentPadding: EdgeInsets.zero,
             title: Text("${p.heatInput.toStringAsFixed(3)} kJ/mm", style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold)),
-            subtitle: Text("${p.process.label.split(' ')[0]} - ${p.current.toInt()}A", style: const TextStyle(color: Colors.white)),
+            subtitle: Text("${p.process.label.split(' ')[0]} - ${DateFormat('HH:mm').format(p.date)}", style: const TextStyle(color: Colors.white)),
             trailing: IconButton(icon: const Icon(Icons.delete, color: AppColors.error), onPressed: () => state.deletePass(p.id)),
           )),
         ]),
